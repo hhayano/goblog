@@ -1,21 +1,121 @@
-# Introduction of an abstraction around Amazon DynamoDB Expressions with the package expression
+# Introducing Amazon DynamoDB Expression Builder in the AWS SDK for Go
 
-The new `expression` package of the
-[AWS SDK for Go](https://aws.amazon.com/sdk-for-go/) provides the functionality
-of creating formatted
+The (version) release of the [AWS SDK for Go](https://aws.amazon.com/sdk-for-go/)
+adds a new
+[`expression`](https://docs.aws.amazon.com/sdk-for-go/api/service/dynamodb/expression)
+package providing the functionality of using a builder pattern to create
 [DynamoDB Expression](http://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Expressions.html)
-strings for the users, abstracting away the idea of
-[`ExpressionAttributeNames`](http://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Expressions.ExpressionAttributeNames.html)
-and
-[`ExpressionAttributeValues`](http://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Expressions.ExpressionAttributeValues.html).
-With the `expression` package, users are able to specify the operands of the
-DynamoDB Expressions and the relationships between the operands functionally
-using a builder pattern. Users can then call getter methods that return the
-correctly formatted DynamoDB Expressions as well as `ExpressionAttributeNames`
-and `ExpressionAttributeValues` instead of having to create those structs by
-hand. This blog post shows some examples of using the new package.
+strings. The `expression` package abstracts away the low-level detail of
+using DynamoDB Expressions and simplifies the process of using DynamoDB
+Expressions in
+[DynamoDB Operations](http://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Expressions.html).
+In this blog post, we explain how to use the `expression` package.
 
-## Creating a `ScanInput` struct using the `expression` package
+In the previous versions of the AWS SDK for Go, the member fields of the
+DynamoDB Operation input structs, such as `QueryInput` and `UpdateItemInput`,
+had to be declared explicitly. That meant that the syntax and rules of DynamoDB
+Expressions were up to you to figure out. The goal of the `expression` package
+is to create the formatted DynamoDB Expression strings under the hood thus
+simplifying the process of using DynamoDB Expressions. The following example
+will illustrate the verbosity of using DynamoDB Expression in the previous
+versions of the AWS SDK for Go.
+
+```go
+input := &dynamodb.ScanInput{
+    ExpressionAttributeNames: map[string]*string{
+        "AT": aws.String("AlbumTitle"),
+        "ST": aws.String("SongTitle"),
+    },
+    ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
+        ":a": {
+            S: aws.String("No One You Know"),
+        },
+    },
+    FilterExpression:     aws.String("Artist = :a"),
+    ProjectionExpression: aws.String("#ST, #AT"),
+    TableName:            aws.String("Music"),
+}
+```
+
+## Representing DynamoDB Expressions
+
+DynamoDB Expressions are represented using various builder structs in the
+`expression` package. These builder structs, like `ConditionBuilder` and
+`UpdateBuilder`, are created in the package using a builder pattern. The
+following example shows how to create a builder struct that represents a
+`FilterExpression` and a `ProjectionExpression`.
+
+```go
+filt := expression.Name("Artist").Equal(expression.Value("No One You Know"))
+// let :a be an ExpressionAttributeValue representing the string "No One You Know"
+// equivalent FilterExpression: "Artist = :a"
+
+proj := expression.NamesList(expression.Name("SongTitle"), expression.Name("AlbumTitle"))
+// equivalent ProjectionExpression: "SongTitle, AlbumTitle"
+```
+
+In the example above, the variable `filt` represents a `FilterExpression`. Note
+that DynamoDB item attributes are represented using the function `Name()` and
+DynamoDB item values are similarly represented using the function `Value()`. In
+this context, the string `"Artist"` represents the name of the item attribute
+that we want to evaluate and the string `"No One You Know"` represents the value
+we want to evaluate the item attribute against. The relationship between the two
+[operands](http://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Expressions.OperatorsAndFunctions.html#Expressions.OperatorsAndFunctions.Syntax)
+are specified using the method `Equal()`.
+
+Similarly, the variable `proj` represents a `ProjectionExpression`. The list of
+item attribute names comprising the `ProjectionExpression` are specified as
+arguments to the function `NamesList()`. The `expression` package utilizes the
+type safety of go and if an item value were to be used as an argument to the
+function `NamesList()`, a compile time error is returned. The pattern of
+representing DynamoDB Expressions by indicating relationships between `operands`
+with functions is consistent throughout the whole `expression` package.
+
+## Creating an `Expression` struct
+
+The `Expression` struct is the core of the `expression` package. The
+`Expression` struct represents the collection of DynamoDB Expressions and has
+getter methods such as `Condition()` and `Projection()` to retrieve the
+formatted DynamoDB Expression strings. The following example shows how to create
+an `Expression` struct.
+
+```go
+filt := expression.Name("Artist").Equal(expression.Value("No One You Know"))
+proj := expression.NamesList(expression.Name("SongTitle"), expression.Name("AlbumTitle"))
+
+expr, err := expression.NewBuilder().WithFilter(filt).WithProjection(proj).Build()
+if err != nil {
+  fmt.Println(err)
+}
+```
+
+In the example above, the variable `expr` is an instance of an `Expression`
+struct. The `Expression` struct is built using a builder pattern. First, a new
+`Builder` struct is initialized by the `NewBuilder()` function. Then, structs
+representing DynamoDB Expressions are added to the `Builder` by methods
+`WithFilter()` and `WithProjection()`. The `Build()` method returns an instance
+of an `Expression` struct and an error. The error will be either an
+`InvalidParameterError` or an `UnsetParameterError`. There is no limit to the
+number of different kinds of DynamoDB Expressions that can be added to the
+`Builder` struct but adding the same type of DynamoDB Expression will overwrite
+the previous DynamoDB Expression.
+
+```go
+cond1 := expression.Name("foo").Equal(expression.Value(5))
+cond2 := expression.Name("bar").Equal(expression.Value(6))
+expr, err := expression.NewBuilder().WithCondition(cond1).WithCondition(cond2).Build()
+if err != nil {
+  fmt.Println(err)
+}
+```
+
+In the example above, the second call of `WithCondition()` overwrites the first
+call.
+
+## Filling in the member fields of a `ScanInput` struct
+
+The following example shows how to use an `Expression` struct to fill in the
+member fields of DynamoDB Operation Input structs.
 
 ```go
 filt := expression.Name("Artist").Equal(expression.Value("No One You Know"))
@@ -34,43 +134,16 @@ input := &dynamodb.ScanInput{
 }
 ```
 
-The example above shows how a user can create builder structs representing the
-DynamoDB Expression strings, see `filt` and `proj`, and how the user can use
-those structs as inputs to a builder pattern to create an `Expression` struct.
-Then, using getter methods on the `Expression` struct, the user can fill out the
-member fields of the `dynamodb.ScanInput` struct. Note that if a user decides to
-use the `expression` package, they must fill out the `ExpressionAttributeNames`
-field and `ExpressionAttributeValues` field of the `dynamodb` input struct. This
-is due to the fact that the `expression` package substitutes all item attribute
-names and values that are specified when creating the builder structs
-representing the DynamoDB Expression strings. If the `ExpressionAttributeNames`
-field or `ExpressionAttributeValues` field is left unset while using the
-`expression` package, logic errors may occur.
+In the example above, the getter methods of the `Expression` struct is used to
+get the formatted DynamoDB Expression strings. The `ExpressionAttributeNames`
+and `ExpressionAttributeValues` member field of the input struct must always be
+assigned when using the `Expression` struct since all item attribute names and
+values are aliased. That means that if the `ExpressionAttributeNames` and
+`ExpressionAttributeValues` member is not assigned with the corresponding
+`Names()` and `Values()` methods, the DynamoDB operation will run into a logic
+error.
 
-## Strong typing for functions
-
-The `expression` package utilizes strong typing of Go to enforce syntax rules of
-DynamoDB Expressions.
-
-```go
-// returns an error
-keyCond := expression.Name("foo").Equal(expression.Value("bar"))
-expr, err := expression.NewBuilder().WithKeyCondition(keyCond).Build()
-
-// does not return an error
-keyCond := expression.Key("foo").Equal(expression.Value("bar"))
-expr, err := expression.NewBuilder().WithKeyCondition(keyCond).Build()
-```
-
-The example above shows an instance where the type safety employed in the
-`expresssion` package returns an error. The error occurs since
-`KeyConditionBuilder` is only created by `KeyBuilder`, not `NameBuilder`. Thus,
-when the method `Equal()` is called on the `NameBuilder` created by `Name()`,
-the method `Equal()` creates a `ConditionBuilder` instead of a
-`KeyConditionBuilder`. Since the `WithKeyCondition()` method expects a
-`KeyConditionBuilder`, the compiler will return an error. There are many other
-DynamoDB syntax rules that are enforced using type safety. If some code is not
-compiling, please check the
-[AWS SDK for Go API Reference](https://docs.aws.amazon.com/sdk-for-go/api/service/dynamodb/expression)
-and the
-[Amazon DynamoDB Developer Guide](http://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Expressions.html).
+Compared to the previous versions of the AWS SDK for Go, the `expression`
+package makes using the DynamoDB Expressions cleaner and simpler. The
+complications of knowing the syntax and rules of DynamoDB Expressions is no
+longer a problem.
